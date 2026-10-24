@@ -1,0 +1,2 @@
+# Копируется в /etc/cron.d/sklad
+45 3 * * * root sh /opt/sklad/deploy/backup.sh >> /var/log/sklad-backup.log 2>&1

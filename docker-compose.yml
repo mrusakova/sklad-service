@@ -1,0 +1,51 @@
+name: sklad
+
+# На этом же сервере работают боты учеников (TEST и PROD) и кабинет олимпиады.
+# Лимиты ниже не дают складу отъесть у них память и процессор.
+# Наружу сайт отдаёт nginx сервера (deploy/nginx/). На отдельном сервере без nginx
+# можно включить встроенный Caddy с автоматическим https: docker compose --profile caddy up -d --build
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+    ports:
+      # Только localhost. 8000/8081 бот TEST, 8100/8181 бот PROD, 8200 кабинет олимпиады.
+      - "127.0.0.1:8300:3000"
+    volumes:
+      # База sklad.db и журнал ИИ. Владелец папки uid 1000 (пользователь node в контейнере).
+      - ./data:/data
+    mem_limit: 320m
+    cpus: 0.5
+    logging: *logging
+
+  caddy:
+    image: caddy:2
+    profiles: ["caddy"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:
