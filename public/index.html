@@ -268,7 +268,13 @@ function stockOf(){
     if(v.type==='in'){s.qIn+=v.qty;s.vIn+=v.qty*v.unitCost}else{s.qOut+=v.qty;s.vOut+=v.qty*v.unitCost}});
   state.receipts.filter(r=>r.status==='ordered').forEach(r=>(r.lines||[]).forEach(l=>{
     if(l.role==='goods'&&l.itemId){const s=m.get(l.itemId);if(s)s.pending+=num(l.qty)}}));
-  m.forEach(s=>{s.qty=r2(s.qIn-s.qOut);s.avg=s.qIn>0?s.vIn/s.qIn:0;s.value=s.qty*s.avg});
+  /* скользящая средняя: стоимость остатка = приходы минус списания по их зафиксированной цене, средняя = стоимость / количество.
+     Списание по средней её не меняет, новый приход пересчитывает её только вместе с тем, что лежит на складе.
+     Если остатка нет, средней служит цена последнего прихода (по ней пойдёт излишек при инвентаризации). */
+  const lastIn=new Map();
+  state.moves.filter(v=>v.type==='in').sort((a,b)=>(a.date||'').localeCompare(b.date||'')).forEach(v=>lastIn.set(v.itemId,v.unitCost));
+  m.forEach(s=>{s.qty=r2(s.qIn-s.qOut);const val=s.vIn-s.vOut;
+    s.avg=s.qty>0&&val>0?val/s.qty:(lastIn.get(s.item.id)||0);s.value=s.qty>0?s.qty*s.avg:0});
   return m;
 }
 function compute(d){
@@ -385,7 +391,7 @@ function renderStock(){
       <td class="n">${s.pending?'<span class="chip soft">+'+fmtQ(s.pending)+'</span>':''}</td>
       <td class="n">${fmt(s.avg)}</td><td class="n">${fmt(s.value)}</td><td>${ME.role==='viewer'?'':`<button class="b small" data-edit="${i.id}" title="Изменить название и группу">Изменить</button>`}</td></tr>`}).join('')+
     `</tbody><tfoot><tr><td colspan="6">Всего по выборке</td><td class="n">${fmt(total)}</td><td></td></tr></tfoot></table></div>
-    <p class="small">Себестоимость единицы считается как средневзвешенная по всем приходам и включает доставку и нанесение. Нажмите на строку, чтобы увидеть движения по товару.</p>`;
+    <p class="small">Себестоимость единицы считается по скользящей средней: каждый приход усредняется с тем, что лежит на складе, списание идёт по текущей средней. Доставка и нанесение входят в себестоимость. Нажмите на строку, чтобы увидеть движения по товару.</p>`;
 }
 
 /* ---------- приход: распознавание ---------- */
