@@ -119,6 +119,7 @@ td.n input.num{min-width:70px}
   </section>
   <div id="draftBox"></div>
   <div id="pendingBox"></div>
+  <div id="doneBox"></div>
 </div>
 <div id="tab-writeoff" hidden></div>
 <div id="tab-inventory" hidden></div>
@@ -324,7 +325,7 @@ function renderAll(force){
   $('#catalog').innerHTML=state.items.map(i=>`<option value="${esc(i.name)}">`).join('');
   $('#groups').innerHTML=[...new Set(state.items.map(i=>i.group).filter(Boolean))].sort().map(g=>`<option value="${esc(g)}">`).join('');
   if(tab==='stock'&&!(editing&&typing('#tab-stock')))renderStock();
-  if(tab==='income'){renderPending();if(!draft&&!$('#draftBox').innerHTML)renderDraft()}
+  if(tab==='income'){renderPending();if(force||!typing('#doneBox'))renderDone();if(!draft&&!$('#draftBox').innerHTML)renderDraft()}
   if(tab==='writeoff'&&(force||!typing('#tab-writeoff')))renderWriteoff();
   if(tab==='inventory'&&(force||!typing('#tab-inventory')))renderInventory();
   if(tab==='users'&&force)renderUsers();
@@ -554,8 +555,9 @@ function renderDraft(){
   const box=$('#draftBox');
   if(!draft){box.innerHTML='';return}
   const d=draft;
+  const ed=!!d.editId;
   box.innerHTML=`<section class="panel">
-    <h2>Проверка позиций</h2>
+    <h2>${ed?'Исправление документа':'Проверка позиций'}</h2>
     <div class="row">
       <label class="f">Тип<select id="dType">${['счёт','УПД','накладная','другое'].map(t=>`<option${t===d.docType?' selected':''}>${t}</option>`).join('')}</select></label>
       <label class="f">Номер<input id="dNo" value="${esc(d.docNo)}" size="10"></label>
@@ -572,13 +574,19 @@ function renderDraft(){
     </div>
     <div id="dSummary"></div>
     <div id="dMsg"></div>
-    <div class="row" style="margin-top:12px">
+    ${ed?`<div class="row" style="margin-top:12px">
+      ${d.editStatus==='received'?`<label class="f">Дата поступления<input id="dRecv" type="date" value="${esc(d.recvDate)}"></label>`:''}
+      <button class="b primary" id="saveEdit">Сохранить изменения</button>
+      <button class="b danger" id="dropDraft">Отменить</button>
+    </div>
+    <p class="small">${d.editStatus==='received'?'Записи этого документа в журнале заменятся новыми, остатки и себестоимость пересчитаются. Списания, уже сделанные из этого прихода, остаются по прежней цене. ':'Это ожидаемая поставка: остатки не изменятся, пока вы её не примете. '}Новая группа запишется в справочник для всего товара. Чтобы переименовать товар везде, нажмите «Изменить» на вкладке «Остатки».</p>`
+    :`<div class="row" style="margin-top:12px">
       <label class="f">Дата поступления<input id="dRecv" type="date" value="${esc(d.recvDate)}"></label>
       <button class="b primary" id="saveRecv">Оприходовать на склад</button>
       <button class="b" id="saveOrd">Сохранить как ожидаемую поставку</button>
       <button class="b danger" id="dropDraft">Отменить</button>
     </div>
-    <p class="small">Счёт не является документом поступления. Если товар ещё в пути, сохраните его как ожидаемую: остатки не изменятся, пока вы не примете поставку на вкладке «Приход».</p>
+    <p class="small">Счёт не является документом поступления. Если товар ещё в пути, сохраните его как ожидаемую: остатки не изменятся, пока вы не примете поставку на вкладке «Приход».</p>`}
   </section>`;
   $('#dMeth').value=d.method;
   renderLink();
@@ -654,9 +662,11 @@ $('#draftBox').addEventListener('click',e=>{
   else if(t.id==='linkDeliv'){const r=state.receipts.find(x=>x.id===draft.linkId);if(r){const c=compute(draft);draft.extra=String(r2(num(draft.extra)+(r.delivery||0)-c.delivery));const ex=$('#dExtra');if(ex)ex.value=draft.extra;updateComputed();updateLinkHint()}}
   else if(t.id==='dropDraft')confirmBtn(t,()=>{draft=null;renderDraft();setStatus('')});
   else if(t.id==='saveRecv')saveDraft('received');
+  else if(t.id==='saveEdit')saveEdit();
   else if(t.id==='saveOrd')saveDraft('ordered');
 });
-async function ensureItems(lines){
+/* setGroup: при исправлении документа группа из формы перезаписывает группу товара в справочнике */
+async function ensureItems(lines,setGroup){
   const byName=new Map(state.items.map(i=>[norm(i.name),i]));
   for(const l of lines){
     if(l.role!=='goods')continue;
@@ -664,7 +674,8 @@ async function ensureItems(lines){
     const alias=l.name&&norm(l.name)!==norm(l.accountName)?l.name:'';
     if(it){
       l.itemId=it.id;
-      if(l.group&&!it.group){it.group=l.group;await db.collection('items').doc(it.id).update({group:l.group})}
+      const g=(l.group||'').trim();
+      if(g&&(!it.group||setGroup&&norm(g)!==norm(it.group))){it.group=g;await db.collection('items').doc(it.id).update({group:g})}
       const al=it.aliases||[];
       if(alias&&!al.some(a=>norm(a)===norm(alias))){it.aliases=al.concat(alias).slice(-12);await db.collection('items').doc(it.id).update({aliases:it.aliases})}
     }else{
@@ -674,16 +685,22 @@ async function ensureItems(lines){
     }
   }
 }
+function draftError(d,needRecv){
+  const goods=d.lines.map((l,i)=>({l,i})).filter(x=>x.l.role==='goods');
+  if(!goods.length)return'Нужна хотя бы одна позиция с ролью «Товар».';
+  const bad=goods.find(x=>!x.l.accountName.trim()||num(x.l.qty)<=0);
+  if(bad)return`Строка №${bad.i+1}: укажите учётное название и количество больше нуля.`;
+  if(!d.date)return'Укажите дату документа.';
+  if(needRecv&&!d.recvDate)return'Укажите дату поступления.';
+  return'';
+}
+const savedLines=(lines,c)=>lines.map((l,i)=>({article:l.article,name:l.name,role:l.role,addonTo:+l.addonTo||0,itemId:l.itemId||'',accountName:l.accountName||'',group:l.group||'',unit:l.unit,
+  qty:num(l.qty),price:num(l.price),sum:r2(c.L[i].s),share:r2(c.out[i].share),addon:r2(c.out[i].addon),total:r2(c.out[i].total),unitCost:r2(c.out[i].unit*1000)/1000}));
 async function saveDraft(mode){
   if(busy||!draft)return;
   if(!db){dmsg('База недоступна, сохранить нельзя.');return}
   const d=draft,c=compute(d);
-  const goods=d.lines.map((l,i)=>({l,i})).filter(x=>x.l.role==='goods');
-  if(!goods.length){dmsg('Нужна хотя бы одна позиция с ролью «Товар».');return}
-  const bad=goods.find(x=>!x.l.accountName.trim()||num(x.l.qty)<=0);
-  if(bad){dmsg(`Строка №${bad.i+1}: укажите учётное название и количество больше нуля.`);return}
-  if(!d.date){dmsg('Укажите дату документа.');return}
-  if(mode==='received'&&!d.recvDate){dmsg('Укажите дату поступления.');return}
+  const err=draftError(d,mode==='received');if(err){dmsg(err);return}
   const linked=d.linkId?state.receipts.find(r=>r.id===d.linkId&&r.status==='ordered'):null;
   if(d.linkId&&!linked){dmsg('Связанный счёт уже принят или удалён. Выберите другой или отмените связывание.');return}
   const dup=linked?null:state.receipts.find(r=>d.docNo&&r.docNo===d.docNo&&norm(r.supplier)===norm(d.supplier)&&r.date===d.date);
@@ -692,8 +709,7 @@ async function saveDraft(mode){
   try{
     const lines=d.lines.map(l=>Object.assign({},l));
     await ensureItems(lines);
-    const outLines=lines.map((l,i)=>({article:l.article,name:l.name,role:l.role,addonTo:+l.addonTo||0,itemId:l.itemId||'',accountName:l.accountName||'',group:l.group||'',unit:l.unit,
-      qty:num(l.qty),price:num(l.price),sum:r2(c.L[i].s),share:r2(c.out[i].share),addon:r2(c.out[i].addon),total:r2(c.out[i].total),unitCost:r2(c.out[i].unit*1000)/1000}));
+    const outLines=savedLines(lines,c);
     const payload={docType:d.docType,docNo:d.docNo,date:d.date,supplier:d.supplier,fileName:d.fileName,status:linked?'received':mode,method:d.method,
       delivery:r2(c.delivery),docSum:r2(c.docSum),total:d.total||0,lines:outLines,createdAt:linked?(linked.createdAt||Date.now()):Date.now(),receivedAt:(linked||mode==='received')?d.recvDate:''};
     if(linked)Object.assign(payload,{invoiceNo:linked.docNo,invoiceDate:linked.date,invoiceType:linked.docType,invoiceSum:linked.docSum});
@@ -712,6 +728,84 @@ async function writeIncoming(receiptId,d,lines,date){
       docRef:[d.docType,d.docNo,d.supplier].filter(Boolean).join(' ')});
   }
 }
+
+/* ---------- приход: исправление сохранённого документа ---------- */
+function editReceipt(id){
+  const r=state.receipts.find(x=>x.id===id);if(!r)return;
+  const lines=(r.lines||[]).map(l=>{const it=l.role==='goods'&&l.itemId&&state.items.find(i=>i.id===l.itemId);
+    return{rowNo:'',article:l.article||'',name:l.name||'',unit:(it&&it.unit)||l.unit||'шт',qty:num(l.qty),price:num(l.price),sum:num(l.sum),role:l.role,addonTo:l.addonTo||'',
+      itemId:it?it.id:'',group:l.role==='goods'?((it&&it.group)||l.group||''):'',accountName:l.role==='goods'?((it&&it.name)||l.accountName||''):''}});
+  const extra=r2((r.delivery||0)-(r.lines||[]).reduce((a,l)=>a+(l.role==='delivery'?num(l.sum):0),0));
+  draft={docType:r.docType||'счёт',docNo:r.docNo||'',date:r.date||today(),supplier:r.supplier||'',total:num(r.total),linkId:'',fileName:r.fileName||'',numPages:0,warnings:[],
+    lines,method:r.method||'value',extra:Math.abs(extra)>0.004?String(extra):'',recvDate:r.receivedAt||r.date||today(),forceDup:true,editId:r.id,editStatus:r.status};
+  setStatus('');renderDraft();
+  $('#draftBox').scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function saveEdit(){
+  if(busy||!draft||!draft.editId)return;
+  if(!db){dmsg('База недоступна, сохранить нельзя.');return}
+  const d=draft,c=compute(d),old=state.receipts.find(r=>r.id===d.editId);
+  if(!old){dmsg('Этот документ уже удалён. Нажмите «Отменить».');return}
+  const received=old.status==='received';
+  const err=draftError(d,received);if(err){dmsg(err);return}
+  const oldMoves=state.moves.filter(v=>v.receiptId===old.id);
+  if(received){
+    /* нельзя уменьшить приход ниже того, что из него уже списано: остаток не должен уйти в минус */
+    const delta=new Map(),add=(id,q)=>delta.set(id,(delta.get(id)||0)+q);
+    oldMoves.forEach(v=>add(v.itemId,-v.qty));
+    d.lines.forEach(l=>{if(l.role!=='goods')return;
+      const it=l.itemId?state.items.find(i=>i.id===l.itemId):state.items.find(i=>norm(i.name)===norm(l.accountName));if(it)add(it.id,num(l.qty))});
+    const st=stockOf();
+    for(const[id,dq]of delta){const s=st.get(id);
+      if(s&&dq<0&&s.qty+dq<-1e-9){dmsg(`«${esc(s.item.name)}»: сейчас на складе ${fmtQ(s.qty)} ${esc(s.item.unit||'шт')}, после исправления стало бы ${fmtQ(r2(s.qty+dq))}. Часть этого прихода уже списана. Сначала отмените лишние списания в журнале.`);return}}
+  }
+  busy=true;dmsg('Сохраняю…','ok');
+  try{
+    const lines=d.lines.map(l=>Object.assign({},l));
+    await ensureItems(lines,true);
+    const outLines=savedLines(lines,c);
+    const payload=Object.assign({},old,{docType:d.docType,docNo:d.docNo,date:d.date,supplier:d.supplier,method:d.method,
+      delivery:r2(c.delivery),docSum:r2(c.docSum),lines:outLines,receivedAt:received?d.recvDate:'',editedAt:Date.now()});
+    delete payload.id;
+    await db.collection('receipts').doc(old.id).set(payload);
+    if(received){
+      for(const v of oldMoves)await db.collection('moves').doc(v.id).delete();
+      await writeIncoming(old.id,d,outLines,d.recvDate);
+    }
+    draft=null;$('#draftBox').innerHTML='';
+    setStatus(received?'Изменения сохранены. Журнал и остатки пересчитаны.':'Изменения в ожидаемой поставке сохранены.','');
+  }catch(e){dmsg('Не удалось сохранить ('+esc(e&&e.code||e&&e.message||'ошибка')+'). Откройте документ и сохраните ещё раз: записи в журнале пересоздадутся заново.')}
+  finally{busy=false}
+}
+
+/* ---------- приход: принятые документы ---------- */
+let doneQ='',doneAll=false;
+function renderDone(){
+  const box=$('#doneBox');
+  let list=state.receipts.filter(r=>r.status==='received')
+    .sort((a,b)=>(b.receivedAt||b.date||'').localeCompare(a.receivedAt||a.date||'')||(b.createdAt||0)-(a.createdAt||0));
+  if(!list.length){box.innerHTML='';return}
+  const q=norm(doneQ);
+  if(q)list=list.filter(r=>norm([r.docType,r.docNo,r.supplier,fdate(r.date),...(r.lines||[]).map(l=>(l.accountName||'')+' '+(l.name||''))].join(' ')).includes(q));
+  const shown=doneAll||q?list:list.slice(0,15);
+  box.innerHTML=`<section class="panel"><h2>Принятые документы</h2>
+    <div class="tools"><label class="f grow">Поиск<input id="doneQ" value="${esc(doneQ)}" placeholder="Номер, поставщик или товар"></label></div>
+    ${shown.length?`<div class="tbl"><table><thead><tr><th>Поступление</th><th>Документ</th><th>Поставщик</th><th class="n">Товаров</th><th class="n">Сумма, ₽</th><th></th></tr></thead><tbody>
+    ${shown.map(r=>`<tr><td class="nowrap">${fdate(r.receivedAt||r.date)}</td><td>${esc(r.docType)} ${esc(r.docNo)}${r.date?' от '+fdate(r.date):''}</td><td>${esc(r.supplier)}</td>
+      <td class="n">${(r.lines||[]).filter(l=>l.role==='goods').length}</td><td class="n">${fmt(r.docSum)}</td><td><button class="b small" data-edit-r="${r.id}">Исправить</button></td></tr>`).join('')}
+    </tbody></table></div>`:'<div class="empty">Ничего не найдено.</div>'}
+    ${!doneAll&&!q&&list.length>shown.length?`<div class="row" style="margin-top:8px"><button class="b small" id="doneMore">Показать все (${list.length})</button></div>`:''}</section>`;
+}
+$('#doneBox').addEventListener('input',e=>{
+  if(e.target.id!=='doneQ')return;
+  doneQ=e.target.value;const pos=e.target.selectionStart;renderDone();
+  const i=$('#doneQ');i.focus();i.setSelectionRange(pos,pos);
+});
+$('#doneBox').addEventListener('click',e=>{
+  const t=e.target;
+  if(t.id==='doneMore'){doneAll=true;renderDone()}
+  if(t.dataset.editR){if(draft&&draft.editId!==t.dataset.editR)confirmBtn(t,()=>editReceipt(t.dataset.editR));else editReceipt(t.dataset.editR)}
+});
 
 /* ---------- сопоставление УПД с ожидаемым счётом ---------- */
 const STOP=new Set(['общество','ограниченной','ответственностью','индивидуальный','предприниматель','акционерное','компания','торговый','дом']);
@@ -734,6 +828,7 @@ function suggestInvoice(d){
 }
 function renderLink(){
   const box=$('#linkBox');if(!box||!draft)return;
+  if(draft.editId){box.innerHTML='';draft.linkId='';return}
   const ordered=state.receipts.filter(r=>r.status==='ordered');
   const isInv=draft.docType==='счёт';
   if(isInv||!ordered.length){box.innerHTML='';if(isInv)draft.linkId='';const so=$('#saveOrd');if(so)so.hidden=false;return}
@@ -778,7 +873,7 @@ function renderPending(){
       ${g.map((l,k)=>`<tr><td>${esc(l.accountName)}</td><td class="n">${fmtQ(l.qty)}</td><td class="n"><input class="num" data-rq="${k}" inputmode="decimal" value="${open&&receiving.q[k]!=null?esc(receiving.q[k]):esc(l.qty)}"></td><td class="n">${fmt(l.total/(open&&num(receiving.q[k])>0?num(receiving.q[k]):l.qty||1))}</td></tr>`).join('')}
       </tbody></table></div>
       <div class="row"><label class="f">Дата поступления<input type="date" data-rd value="${open?esc(receiving.date):today()}"></label>
-      <button class="b primary" data-recv="${r.id}">Принять на склад</button><button class="b danger small" data-cancel="${r.id}">Удалить счёт</button></div>
+      <button class="b primary" data-recv="${r.id}">Принять на склад</button><button class="b small" data-edit-r="${r.id}">Исправить</button><button class="b danger small" data-cancel="${r.id}">Удалить счёт</button></div>
       <div class="small">Если пришло меньше, чем заказано, укажите фактическое количество: себестоимость единицы пересчитается.</div></details>`}).join('')+`</section>`;
 }
 $('#pendingBox').addEventListener('toggle',e=>{const dt=e.target;if(dt.tagName==='DETAILS'&&dt.open&&!(receiving&&receiving.id===dt.dataset.r))receiving={id:dt.dataset.r,q:[],date:today()}},true);
@@ -792,6 +887,7 @@ $('#pendingBox').addEventListener('input',e=>{
 $('#pendingBox').addEventListener('click',async e=>{
   const t=e.target;
   if(t.dataset.cancel)confirmBtn(t,async()=>{try{await db.collection('receipts').doc(t.dataset.cancel).delete()}catch(x){}});
+  if(t.dataset.editR){if(draft&&draft.editId!==t.dataset.editR)confirmBtn(t,()=>editReceipt(t.dataset.editR));else editReceipt(t.dataset.editR)}
   if(t.dataset.recv&&!busy){
     const r=state.receipts.find(x=>x.id===t.dataset.recv);if(!r)return;
     const date=(receiving&&receiving.id===r.id?receiving.date:'')||today();
