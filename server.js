@@ -26,7 +26,7 @@ const AI_ON = AI_PROVIDER === 'yandex' ? !!(YA_KEY && YA_FOLDER) : !!AI_KEY;
 /* AI_LOG=1: полные ответы ИИ пишутся в data/ai-log (последние 100 файлов), чтобы разбирать качество распознавания */
 const AI_LOG = /^(1|true|yes)$/i.test(process.env.AI_LOG || '');
 const AI_LOG_DIR = path.join(DATA_DIR, 'ai-log');
-const COLLECTIONS = new Set(['items', 'projects', 'receipts', 'moves', 'inventories']);
+const COLLECTIONS = new Set(['items', 'projects', 'receipts', 'moves', 'inventories', 'drafts']);
 const ROLES = new Set(['admin', 'staff', 'viewer']);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });

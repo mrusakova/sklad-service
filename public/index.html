@@ -257,7 +257,7 @@ function applyRole(me){
   $('#who').innerHTML=esc(me.name)+(me.role==='viewer'?' <span class="chip soft">только просмотр</span>':'')+' <button class="b small" id="logout">Выйти</button>';
   $('#logout').onclick=async()=>{try{await claude.api('POST','/api/logout')}catch(e){}location.href='/login.html'};
 }
-const state={items:[],projects:[],receipts:[],moves:[],inventories:[],ready:{}};
+const state={items:[],projects:[],receipts:[],moves:[],inventories:[],drafts:[],ready:{}};
 let db=null, tab=LS.get('sklad.tab')||'stock', journalFilter={item:'',project:'',type:''};
 let draft=null, wo={rows:[{itemId:'',qty:''}],projectId:'',date:today(),note:''}, receiving=null, busy=false;
 
@@ -300,7 +300,9 @@ function compute(d){
 function sub(name){
   db.collection(name).onSnapshot(s=>{
     state[name]=s.docs.map(d=>Object.assign({id:d.id},d.data()));
-    state.ready[name]=true;renderAll();
+    state.ready[name]=true;
+    if(name==='drafts')syncInvDraft();
+    renderAll();
   },e=>{$('#banner').innerHTML='<div class="msg bad">Не удалось прочитать данные ('+esc(e&&e.code||'ошибка')+'). Обновите страницу.</div>'});
 }
 async function init(){
@@ -308,7 +310,7 @@ async function init(){
   renderTabs();renderAll();
   try{db=await claude.use('db')}catch(e){db=null}
   if(!db){$('#banner').innerHTML='<div class="msg warn">Не удалось подключиться к базе. Обновите страницу.</div>';return}
-  ['items','projects','receipts','moves','inventories'].forEach(sub);
+  ['items','projects','receipts','moves','inventories','drafts'].forEach(sub);
 }
 
 /* ---------- вкладки ---------- */
@@ -971,6 +973,60 @@ $('#tab-writeoff').addEventListener('click',async e=>{
 /* ---------- инвентаризация ---------- */
 let inv={fact:{},date:today(),note:'',group:'',q:'',zero:false};
 function invHas(id){const v=inv.fact[id];return v!=null&&String(v).trim()!==''}
+
+/* черновик инвентаризации: один общий на сервере (drafts/inventory), чтобы считать в несколько заходов
+   и с разных компьютеров. Каждое количество лежит в своём поле f_<id товара>: сервер сливает поля,
+   поэтому двое, считающие разные полки, не затирают друг друга. */
+const INV_DRAFT='inventory';
+let invPending={},invInflight={},invTimer=null,invDraftErr='';
+const invDraft=()=>state.drafts.find(d=>d.id===INV_DRAFT);
+function syncInvDraft(){
+  const d=invDraft(),local=Object.assign({},invInflight,invPending);
+  const a=document.activeElement,ftr=a&&a.closest&&a.closest('#tab-inventory tr[data-id]'),fid=ftr&&ftr.dataset.id;
+  const fact={};
+  if(d)Object.keys(d).forEach(k=>{if(k.startsWith('f_')&&String(d[k]).trim()!=='')fact[k.slice(2)]=String(d[k])});
+  Object.keys(local).forEach(k=>{if(!k.startsWith('f_'))return;const id=k.slice(2);if(String(local[k]).trim()!=='')fact[id]=local[k];else delete fact[id]});
+  if(fid){if(invHas(fid))fact[fid]=inv.fact[fid];else delete fact[fid]}
+  inv.fact=fact;
+  if(d&&d.date&&!('date' in local)&&!(a&&a.id==='invDate'))inv.date=d.date;
+  if(!('note' in local)&&!(a&&a.id==='invNote'))inv.note=d?d.note||'':inv.note;
+  if(tab==='inventory'&&typing('#tab-inventory')){
+    document.querySelectorAll('#tab-inventory tr[data-id]').forEach(tr=>{if(tr.dataset.id===fid)return;const v=inv.fact[tr.dataset.id];tr.querySelector('[data-fact]').value=v==null?'':v});
+    updateInvCells();
+  }
+}
+function invSaveSoon(key,value){
+  invPending[key]=value;clearTimeout(invTimer);invTimer=setTimeout(flushInvDraft,700);invDraftStatus('Сохраняю черновик…');
+}
+async function flushInvDraft(){
+  clearTimeout(invTimer);
+  if(!db||!Object.keys(invPending).length)return;
+  const p=invPending;invPending={};invInflight=p;
+  const meta={updatedAt:Date.now(),updatedBy:ME.name||ME.login||''};
+  const full=()=>{const o={date:inv.date,note:inv.note};Object.keys(inv.fact).forEach(id=>{if(invHas(id))o['f_'+id]=inv.fact[id]});return Object.assign(o,p,meta)};
+  const ref=db.collection('drafts').doc(INV_DRAFT);
+  try{
+    if(invDraft()){try{await ref.update(Object.assign({},p,meta))}catch(e){if(e&&e.code==='http_404')await ref.set(full());else throw e}}
+    else await ref.set(full());
+    invDraftErr='';
+  }catch(e){invPending=Object.assign(p,invPending);invDraftErr='Черновик не сохранился ('+(e&&e.message||'нет связи')+'). Цифры на экране целы, сохранение повторится при следующем вводе.'}
+  finally{invInflight={};invDraftStatus()}
+}
+function invDraftStatus(text){
+  const el=$('#invDraftSt');if(!el)return;
+  if(text){el.textContent=text;return}
+  if(invDraftErr){el.innerHTML=`<span class="chip bad" style="white-space:normal">${esc(invDraftErr)}</span>`;return}
+  const d=invDraft();
+  if(!d){el.textContent=Object.keys(inv.fact).length?'':'Черновика нет. Введённые цифры сохраняются автоматически, их увидят все сотрудники.';return}
+  const n=Object.keys(d).filter(k=>k.startsWith('f_')&&String(d[k]).trim()!=='').length,t=d.updatedAt?new Date(d.updatedAt):null;
+  el.textContent=`Черновик сохранён: заполнено позиций ${n}`+(t?`, изменён ${t.toLocaleDateString('ru-RU')} в ${t.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}`:'')+(d.updatedBy?` (${d.updatedBy})`:'')+'.';
+}
+addEventListener('pagehide',()=>{flushInvDraft()});
+async function clearInvDraft(){
+  clearTimeout(invTimer);invPending={};invDraftErr='';
+  inv.fact={};inv.note='';inv.date=today();
+  try{if(invDraft())await db.collection('drafts').doc(INV_DRAFT).delete()}catch(e){}
+}
 function invRows(){
   const m=stockOf();
   return [...m.values()].filter(s=>(inv.zero||s.qty!==0||invHas(s.item.id))
@@ -1001,7 +1057,9 @@ function updateInvCells(){
   const c=invCalc(),el=$('#invSum');
   if(el)el.innerHTML=c.n?`Пересчитано позиций: <b>${c.n}</b>. Расхождений: <b>${c.list.length}</b>. Недостача: <b>${fmt(c.sh)} ₽</b>, излишек: <b>${fmt(c.su)} ₽</b>.`:'Введите фактическое количество. Строки, которые вы не заполнили, считаются непересчитанными и не изменятся.';
 }
-function invmsg(t,cls){const el=$('#invMsg');if(el)el.innerHTML=t?`<div class="msg ${cls||'bad'}">${t}</div>`:''}
+/* сообщение хранится в переменной: вкладка перерисовывается при обновлениях базы и не должна его терять */
+let invMsgHtml='';
+function invmsg(t,cls){invMsgHtml=t?`<div class="msg ${cls||'bad'}">${t}</div>`:'';const el=$('#invMsg');if(el)el.innerHTML=invMsgHtml}
 function renderInventory(){
   const root=$('#tab-inventory');
   if(!state.items.length){root.innerHTML='<section class="panel"><div class="empty">На складе пока нет товаров. Сначала оприходуйте поставку на вкладке «Приход».</div></section>';return}
@@ -1022,19 +1080,21 @@ function renderInventory(){
     </tbody></table></div>`:'<div class="tbl"><div class="empty">Нет товаров по выбранным условиям.</div></div>'}
     <div class="msg" id="invSum" style="margin-top:12px" aria-live="polite"></div>
     <label class="f">Комментарий<input id="invNote" value="${esc(inv.note)}" placeholder="Например: годовая инвентаризация склада"></label>
-    <div id="invMsg"></div>
-    <div class="row" style="margin-top:12px"><button class="b primary" id="invSave">Провести инвентаризацию</button></div>
-    <p class="small">Недостача спишется из остатков, излишек оприходуется по средней себестоимости. Каждое изменение появится в журнале с пометкой «инвентаризация», отменить его можно там же.</p>
+    <div id="invMsg">${invMsgHtml}</div>
+    <div class="row" style="margin-top:12px"><button class="b primary" id="invSave">Провести инвентаризацию</button><button class="b danger" id="invClear" title="Стереть все введённые цифры и комментарий">Очистить</button></div>
+    <div id="invDraftSt" class="small" style="margin-top:8px" aria-live="polite"></div>
+    <p class="small">Цифры сохраняются в общий черновик сразу при вводе: можно закрыть страницу и продолжить позже, в том числе с другого компьютера. Разница считается с остатком на момент проведения, поэтому пока идёт пересчёт, лучше не списывать товар. Недостача спишется из остатков, излишек оприходуется по средней себестоимости. Каждое изменение появится в журнале с пометкой «инвентаризация», отменить его можно там же.</p>
   </section>
   ${hist.length?`<section class="panel"><h2>Прошлые инвентаризации</h2>${hist.map(h=>`<details><summary><span>${fdate(h.date)}${h.note?', '+esc(h.note):''}</span><span class="nowrap">недостача ${fmt(h.shortage||0)} ₽, излишек ${fmt(h.surplus||0)} ₽</span></summary>
     ${(h.rows||[]).length?`<div class="tbl" style="margin-top:8px"><table><thead><tr><th>Товар</th><th class="n">По учёту</th><th class="n">Факт</th><th class="n">Разница</th></tr></thead><tbody>${h.rows.map(r=>`<tr><td>${esc(r.name)}</td><td class="n">${fmtQ(r.book)}</td><td class="n">${fmtQ(r.fact)}</td><td class="n">${r.diff>0?'+':''}${fmtQ(r.diff)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="small" style="margin-top:8px">Расхождений не было.</div>'}</details>`).join('')}</section>`:''}`;
-  updateInvCells();
+  updateInvCells();invDraftStatus();
 }
 $('#tab-inventory').addEventListener('input',e=>{
   const t=e.target;
-  if(t.dataset.fact!==undefined){inv.fact[t.closest('tr').dataset.id]=t.value;updateInvCells()}
-  else if(t.id==='invDate')inv.date=t.value;
-  else if(t.id==='invNote')inv.note=t.value;
+  if(invMsgHtml)invmsg('');
+  if(t.dataset.fact!==undefined){const id=t.closest('tr').dataset.id;inv.fact[id]=t.value;if(!invHas(id))delete inv.fact[id];invSaveSoon('f_'+id,t.value.trim());updateInvCells()}
+  else if(t.id==='invDate'){inv.date=t.value;invSaveSoon('date',t.value)}
+  else if(t.id==='invNote'){inv.note=t.value;invSaveSoon('note',t.value)}
   else if(t.id==='invQ'){inv.q=norm(t.value);renderInventory();const q=$('#invQ');if(q){q.focus();q.setSelectionRange(q.value.length,q.value.length)}}
 });
 $('#tab-inventory').addEventListener('change',e=>{
@@ -1044,8 +1104,9 @@ $('#tab-inventory').addEventListener('change',e=>{
 });
 $('#tab-inventory').addEventListener('click',async e=>{
   const t=e.target;
-  if(t.id==='invFill'){invRows().forEach(s=>{if(!invHas(s.item.id))inv.fact[s.item.id]=String(s.qty)});renderInventory()}
+  if(t.id==='invFill'){invRows().forEach(s=>{if(!invHas(s.item.id)){inv.fact[s.item.id]=String(s.qty);invSaveSoon('f_'+s.item.id,String(s.qty))}});renderInventory()}
   if(t.id==='invSave')confirmBtn(t,saveInventory);
+  if(t.id==='invClear')confirmBtn(t,async()=>{await clearInvDraft();renderInventory()});
 });
 async function saveInventory(){
   if(busy)return;
@@ -1065,7 +1126,7 @@ async function saveInventory(){
       else await db.collection('moves').add({type:'in',kind:'inventory',inventoryId:ref.id,itemId:x.s.item.id,itemName:x.s.item.name,qty:x.diff,unitCost:uc,date:inv.date,docRef:'Инвентаризация: излишек',note:inv.note||'Инвентаризация'});
     }
     const done=c.n,sh=c.sh,su=c.su,nd=c.list.length;
-    inv.fact={};inv.note='';
+    await clearInvDraft();
     renderInventory();
     invmsg(`Инвентаризация проведена. Пересчитано ${done}, расхождений ${nd}. Недостача ${fmt(sh)} ₽, излишек ${fmt(su)} ₽.`,'ok');
   }catch(x){invmsg('Не удалось провести ('+esc(x&&x.code||'ошибка')+'). Проверьте журнал: часть движений могла записаться.')}

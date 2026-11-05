@@ -58,6 +58,7 @@ sklad-service/
 - `receipts/{id}`: `docType` (счёт, УПД, накладная, другое), `docNo`, `date`, `supplier`, `status` (`ordered` или `received`), `method` (`value`, `qty`, `equal`), `delivery`, `docSum`, `total`, `lines[]`, `receivedAt`, при закрытии счёта УПД ещё `invoiceNo`, `invoiceDate`, `invoiceType`, `invoiceSum`. Строка: `role` (`goods`, `addon`, `delivery`, `ignore`), `addonTo`, `itemId`, `accountName`, `group`, `qty`, `price`, `sum`, `share`, `addon`, `total`, `unitCost`.
 - `moves/{id}`: `type` (`in` или `out`), `itemId`, `itemName`, `qty`, `unitCost`, `date`, для прихода `receiptId` и `docRef`, для списания `projectId`, `projectName`, `note`, `batch`; для инвентаризации `kind:"inventory"` и `inventoryId`.
 - `inventories/{id}`: `date`, `note`, `counted`, `shortage`, `surplus`, `rows[]`.
+- `drafts/inventory` (с 05.11.2026): общий черновик инвентаризации: `date`, `note`, `f_<id товара>` (введённый факт строкой), `updatedAt`, `updatedBy`. Сохраняется при вводе через PATCH по отдельным полям (двое могут считать разные товары одновременно), удаляется кнопкой «Очистить» и после проведения.
 
 Остаток считается не хранится: сумма `in` минус сумма `out` по `itemId`.
 
