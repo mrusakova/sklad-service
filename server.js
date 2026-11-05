@@ -178,8 +178,8 @@ function putDoc(col, id, data) {
 }
 const isObj = (o) => o && typeof o === 'object' && !Array.isArray(o);
 /* товары меняет только администратор; сотрудник при приходе может создать новый товар,
-   дописать группу и названия из документов поставщика */
-const ITEM_STAFF_FIELDS = new Set(['group', 'aliases']);
+   дописать группу и названия из документов поставщика, а также писать комментарий к позиции */
+const ITEM_STAFF_FIELDS = new Set(['group', 'aliases', 'note']);
 const itemDenied = (req) => req.params.col === 'items' && req.user.role !== 'admin';
 app.put('/api/c/:col/:id', canWrite, colOk, jsonSmall, (req, res) => {
   if (!idOk(req.params.id) || !isObj(req.body)) return res.status(400).json({ error: 'bad request' });

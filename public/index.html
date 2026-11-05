@@ -327,7 +327,7 @@ function renderAll(force){
   renderTabs();
   $('#catalog').innerHTML=state.items.map(i=>`<option value="${esc(i.name)}">`).join('');
   $('#groups').innerHTML=[...new Set(state.items.map(i=>i.group).filter(Boolean))].sort().map(g=>`<option value="${esc(g)}">`).join('');
-  if(tab==='stock'&&!(editing&&typing('#tab-stock')))renderStock();
+  if(tab==='stock'&&!((editing||noteEditing)&&typing('#tab-stock')))renderStock();
   if(tab==='income'){renderPending();if(force||!typing('#doneBox'))renderDone();if(!draft&&!$('#draftBox').innerHTML)renderDraft()}
   if(tab==='writeoff'&&(force||!typing('#tab-writeoff')))renderWriteoff();
   if(tab==='inventory'&&(force||!typing('#tab-inventory')))renderInventory();
@@ -342,7 +342,7 @@ function confirmBtn(btn,fn){
 }
 
 /* ---------- остатки ---------- */
-let stockQ='',stockOnly=true,stockGroup='',editing='',editErr='';
+let stockQ='',stockOnly=true,stockGroup='',editing='',editErr='',noteEditing='';
 /* сортировка по клику на заголовок: первый клик по возрастанию, второй по убыванию, третий возвращает обычный порядок (группа, название) */
 const STOCK_COLS=[['name','Товар'],['group','Группа'],['unit','Ед.'],['qty','Остаток',1],['pending','Ожидается',1],['avg','Себестоимость ед., ₽',1],['value','Стоимость остатка, ₽',1],['note','Комментарий']];
 let stockSort=(()=>{const[k,d]=String(LS.get('sklad.stockSort')||'').split(':');return STOCK_COLS.some(c=>c[0]===k)?{k,dir:d==='desc'?-1:1}:{k:'',dir:1}})();
@@ -355,24 +355,58 @@ function stockCmp(a,b){
   if(!x!==!y)return x?-1:1; /* пустые всегда в конце */
   return(x.localeCompare(y,'ru')*stockSort.dir)||byName;
 }
+/* строки остатков с учётом поиска, группы, галочки и сортировки: одни и те же для таблицы и CSV */
+function stockRows(m){
+  return[...(m||stockOf()).values()].sort(stockCmp).filter(s=>(!stockQ||norm(s.item.name).includes(stockQ)||norm(s.item.group).includes(stockQ)||norm(s.item.note).includes(stockQ))
+    &&(!stockGroup||(stockGroup==='__none'?!s.item.group:s.item.group===stockGroup))
+    &&(!stockOnly||s.qty>0||s.pending>0||s.item.id===editing||s.item.id===noteEditing));
+}
+/* комментарий к позиции может писать любой, кроме роли «только просмотр» */
+function noteCell(i){
+  if(i.id===noteEditing)return `<td class="nowrap"><input data-nc value="${esc(i.note||'')}" placeholder="Комментарий" aria-label="Комментарий" style="min-width:160px"> <button class="b primary small" data-nsave>Сохранить</button> <button class="b small" data-ncancel>Отмена</button></td>`;
+  return `<td class="small">${esc(i.note||'')}${ME.role==='viewer'?'':` <button class="b small" data-note="${i.id}" title="${i.note?'Изменить комментарий':'Добавить комментарий'}" aria-label="${i.note?'Изменить комментарий':'Добавить комментарий'}">✎</button>`}</td>`;
+}
+async function saveNote(input){
+  if(!input||!noteEditing)return;
+  const id=noteEditing;
+  try{await db.collection('items').doc(id).update({note:input.value.trim()});noteEditing='';editErr='';renderStock()}
+  catch(x){editErr='Не удалось сохранить комментарий ('+(x&&x.message||x&&x.code||'ошибка')+').';renderStock()}
+}
+const csvNum=n=>String(Math.round((+n||0)*100)/100).replace('.',',');
+async function stockCsv(){
+  const dl=await claude.use('downloads');if(!dl)return;
+  const q=s=>'"'+String(s==null?'':s).replace(/"/g,'""')+'"';
+  const rows=[['Товар','Группа','Ед.','Остаток','Ожидается','Себестоимость ед., ₽','Стоимость остатка, ₽','Комментарий']];
+  stockRows().forEach(s=>rows.push([s.item.name,s.item.group||'',s.item.unit||'шт',csvNum(s.qty),csvNum(s.pending),csvNum(s.avg),csvNum(s.value),s.item.note||'']));
+  try{await dl.save({filename:'остатки-склада-'+today()+'.csv',data:'\ufeff'+rows.map(r=>r.map(q).join(';')).join('\r\n')})}catch(x){}
+}
 function renderStock(){
   const root=$('#tab-stock');
   if(!root.dataset.built){
     root.dataset.built='1';
     root.innerHTML=`<div class="tools"><label class="f grow">Поиск<input id="sq" type="search" placeholder="Название товара"></label>
       <label class="f">Группа<select id="sgroup"></select></label>
-      <label class="f" style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" id="sonly" checked> только с остатком</label></div>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" id="sonly" checked> только с остатком</label>
+      <button class="b" id="sCsv" title="Выгрузить таблицу с текущими фильтрами и сортировкой">Скачать CSV</button></div>
       <div id="stockSum"></div><div id="stockTbl"></div>`;
     $('#sq').addEventListener('input',e=>{stockQ=norm(e.target.value);renderStock()});
     $('#sgroup').addEventListener('change',e=>{stockGroup=e.target.value;renderStock()});
     $('#sonly').addEventListener('change',e=>{stockOnly=e.target.checked;renderStock()});
+    $('#sCsv').addEventListener('click',stockCsv);
+    $('#stockTbl').addEventListener('keydown',e=>{
+      if(e.target.dataset.nc===undefined)return;
+      if(e.key==='Enter'){e.preventDefault();saveNote(e.target)}else if(e.key==='Escape'){noteEditing='';renderStock()}
+    });
     $('#stockTbl').addEventListener('click',async e=>{
       const t=e.target;
       const th=t.closest('th[data-sort]');
       if(th){const k=th.dataset.sort;
         stockSort=stockSort.k!==k?{k,dir:1}:stockSort.dir>0?{k,dir:-1}:{k:'',dir:1};
         LS.set('sklad.stockSort',stockSort.k?stockSort.k+':'+(stockSort.dir>0?'asc':'desc'):'');renderStock();return}
-      if(t.dataset.edit){editing=t.dataset.edit;editErr='';renderStock();return}
+      if(t.dataset.edit){editing=t.dataset.edit;noteEditing='';editErr='';renderStock();return}
+      if(t.dataset.note){noteEditing=t.dataset.note;editing='';editErr='';renderStock();const i=$('#stockTbl [data-nc]');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}return}
+      if(t.dataset.nsave!==undefined){saveNote(t.closest('tr').querySelector('[data-nc]'));return}
+      if(t.dataset.ncancel!==undefined){noteEditing='';editErr='';renderStock();return}
       if(t.dataset.cancel!==undefined){editing='';editErr='';renderStock();return}
       if(t.dataset.save){
         const tr=t.closest('tr'),name=tr.querySelector('[data-en]').value.trim(),group=tr.querySelector('[data-eg]').value.trim(),unit=tr.querySelector('[data-eu]').value.trim()||'шт',note=tr.querySelector('[data-ec]').value.trim();
@@ -382,7 +416,7 @@ function renderStock(){
         catch(x){editErr='Не удалось сохранить ('+(x&&x.code||'ошибка')+').';renderStock()}
         return}
       if(t.closest('button,input'))return;
-      const tr=t.closest('tr[data-item]');if(!tr||tr.dataset.item===editing)return;
+      const tr=t.closest('tr[data-item]');if(!tr||tr.dataset.item===editing||tr.dataset.item===noteEditing)return;
       journalFilter={item:tr.dataset.item,project:'',type:''};goTab('journal');
     });
   }
@@ -392,10 +426,7 @@ function renderStock(){
   sel.innerHTML='<option value="">Все группы</option>'+gs.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')+(state.items.some(i=>!i.group)&&gs.length?'<option value="__none">Без группы</option>':'');
   if(stockGroup&&![...sel.options].some(o=>o.value===stockGroup))stockGroup='';
   sel.value=stockGroup;
-  let rows=[...m.values()].sort(stockCmp);
-  rows=rows.filter(s=>(!stockQ||norm(s.item.name).includes(stockQ)||norm(s.item.group).includes(stockQ)||norm(s.item.note).includes(stockQ))
-    &&(!stockGroup||(stockGroup==='__none'?!s.item.group:s.item.group===stockGroup))
-    &&(!stockOnly||s.qty>0||s.pending>0||s.item.id===editing));
+  const rows=stockRows(m);
   const total=rows.reduce((a,s)=>a+s.value,0);
   const sums=new Map();rows.forEach(s=>{const g=s.item.group||'Без группы';sums.set(g,(sums.get(g)||0)+s.value)});
   $('#stockSum').innerHTML=gs.length&&!stockGroup&&sums.size>1?`<div class="row" style="gap:6px;margin-bottom:10px">${[...sums].map(([g,v])=>`<span class="chip soft">${esc(g)}: ${fmt(v)} ₽</span>`).join('')}</div>`:'';
@@ -410,7 +441,7 @@ function renderStock(){
       return `<tr class="click" data-item="${i.id}" title="Показать движения"><td>${esc(i.name)}</td><td>${i.group?esc(i.group):'<span class="small">нет</span>'}</td><td>${esc(i.unit||'шт')}</td>
       <td class="n">${fmtQ(s.qty)} ${low?'<span class="chip warn">мало</span>':''}</td>
       <td class="n">${s.pending?'<span class="chip soft">+'+fmtQ(s.pending)+'</span>':''}</td>
-      <td class="n">${fmt(s.avg)}</td><td class="n">${fmt(s.value)}</td><td class="small">${esc(i.note||'')}</td><td>${ME.role==='admin'?`<button class="b small" data-edit="${i.id}" title="Изменить название, группу и комментарий">Изменить</button>`:''}</td></tr>`}).join('')+
+      <td class="n">${fmt(s.avg)}</td><td class="n">${fmt(s.value)}</td>${noteCell(i)}<td>${ME.role==='admin'?`<button class="b small" data-edit="${i.id}" title="Изменить название, группу и комментарий">Изменить</button>`:''}</td></tr>`}).join('')+
     `</tbody><tfoot><tr><td colspan="6">Всего по выборке</td><td class="n">${fmt(total)}</td><td></td><td></td></tr></tfoot></table></div>
     <p class="small">Себестоимость единицы считается по скользящей средней: каждый приход усредняется с тем, что лежит на складе, списание идёт по текущей средней. Доставка и нанесение входят в себестоимость. Нажмите на строку, чтобы увидеть движения по товару.</p>`;
 }
@@ -1257,7 +1288,7 @@ function renderRefs(){
       <td><input data-iu="${i.id}" value="${esc(i.unit||'шт')}" style="width:56px"></td>
       <td class="n"><input class="num" data-im="${i.id}" inputmode="decimal" value="${i.minQty||''}" placeholder="0"></td>
       <td>${used?'':`<button class="b small danger" data-idel="${i.id}">Удалить</button>`}</td></tr>`}).join('')}
-    </tbody></table></div><p class="small">${isAdmin?'Переименование меняет название везде, в том числе в журнале. ':'Менять товары может только администратор. '}Когда остаток падает до «мин. остатка», в таблице остатков появляется отметка «мало».</p>`:'<div class="small">Товары появятся после первого прихода.</div>'}</section></div>`;
+    </tbody></table></div><p class="small">${isAdmin?'Переименование меняет название везде, в том числе в журнале. ':'Менять товары может только администратор, комментарий к позиции можно написать на вкладке «Остатки». '}Когда остаток падает до «мин. остатка», в таблице остатков появляется отметка «мало».</p>`:'<div class="small">Товары появятся после первого прихода.</div>'}</section></div>`;
 }
 $('#tab-refs').addEventListener('click',async e=>{
   const t=e.target;
