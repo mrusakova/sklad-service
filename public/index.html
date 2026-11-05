@@ -356,10 +356,10 @@ function renderStock(){
       if(t.dataset.edit){editing=t.dataset.edit;editErr='';renderStock();return}
       if(t.dataset.cancel!==undefined){editing='';editErr='';renderStock();return}
       if(t.dataset.save){
-        const tr=t.closest('tr'),name=tr.querySelector('[data-en]').value.trim(),group=tr.querySelector('[data-eg]').value.trim(),unit=tr.querySelector('[data-eu]').value.trim()||'шт';
+        const tr=t.closest('tr'),name=tr.querySelector('[data-en]').value.trim(),group=tr.querySelector('[data-eg]').value.trim(),unit=tr.querySelector('[data-eu]').value.trim()||'шт',note=tr.querySelector('[data-ec]').value.trim();
         if(!name){editErr='Название не может быть пустым.';renderStock();return}
         if(state.items.some(i=>i.id!==t.dataset.save&&norm(i.name)===norm(name))){editErr='Товар с названием «'+name+'» уже есть. Выберите другое название.';renderStock();return}
-        try{await db.collection('items').doc(t.dataset.save).update({name,group,unit});editing='';editErr='';renderStock()}
+        try{await db.collection('items').doc(t.dataset.save).update({name,group,unit,note});editing='';editErr='';renderStock()}
         catch(x){editErr='Не удалось сохранить ('+(x&&x.code||'ошибка')+').';renderStock()}
         return}
       if(t.closest('button,input'))return;
@@ -374,7 +374,7 @@ function renderStock(){
   if(stockGroup&&![...sel.options].some(o=>o.value===stockGroup))stockGroup='';
   sel.value=stockGroup;
   let rows=[...m.values()].sort((a,b)=>(a.item.group?0:1)-(b.item.group?0:1)||(a.item.group||'').localeCompare(b.item.group||'','ru')||a.item.name.localeCompare(b.item.name,'ru'));
-  rows=rows.filter(s=>(!stockQ||norm(s.item.name).includes(stockQ)||norm(s.item.group).includes(stockQ))
+  rows=rows.filter(s=>(!stockQ||norm(s.item.name).includes(stockQ)||norm(s.item.group).includes(stockQ)||norm(s.item.note).includes(stockQ))
     &&(!stockGroup||(stockGroup==='__none'?!s.item.group:s.item.group===stockGroup))
     &&(!stockOnly||s.qty>0||s.pending>0||s.item.id===editing));
   const total=rows.reduce((a,s)=>a+s.value,0);
@@ -384,14 +384,14 @@ function renderStock(){
   if(!state.items.length){box.innerHTML=`<div class="tbl"><div class="empty">Склад пока пуст. Загрузите первый счёт или УПД на вкладке «Приход».<br><br><button class="b primary" data-go="income">Перейти к приходу</button></div></div>`;
     box.querySelector('[data-go]').onclick=()=>goTab('income');return}
   if(!rows.length){box.innerHTML='<div class="tbl"><div class="empty">Ничего не найдено.</div></div>';return}
-  box.innerHTML=(editErr?`<div class="msg bad">${esc(editErr)}</div>`:'')+`<div class="tbl"><table><thead><tr><th>Товар</th><th>Группа</th><th>Ед.</th><th class="n">Остаток</th><th class="n">Ожидается</th><th class="n">Себестоимость ед., ₽</th><th class="n">Стоимость остатка, ₽</th><th></th></tr></thead><tbody>`+
+  box.innerHTML=(editErr?`<div class="msg bad">${esc(editErr)}</div>`:'')+`<div class="tbl"><table><thead><tr><th>Товар</th><th>Группа</th><th>Ед.</th><th class="n">Остаток</th><th class="n">Ожидается</th><th class="n">Себестоимость ед., ₽</th><th class="n">Стоимость остатка, ₽</th><th>Комментарий</th><th></th></tr></thead><tbody>`+
     rows.map(s=>{const i=s.item,low=i.minQty>0&&s.qty<=i.minQty;
-      if(i.id===editing)return `<tr data-item="${i.id}"><td><input data-en value="${esc(i.name)}" aria-label="Название"></td><td><input data-eg list="groups" value="${esc(i.group||'')}" placeholder="Группа" aria-label="Группа"></td><td><input data-eu value="${esc(i.unit||'шт')}" style="width:56px" aria-label="Единица"></td><td colspan="4" class="small">Название и группа изменятся везде, в том числе в журнале.</td><td class="nowrap"><button class="b primary small" data-save="${i.id}">Сохранить</button> <button class="b small" data-cancel>Отмена</button></td></tr>`;
+      if(i.id===editing)return `<tr data-item="${i.id}"><td><input data-en value="${esc(i.name)}" aria-label="Название"></td><td><input data-eg list="groups" value="${esc(i.group||'')}" placeholder="Группа" aria-label="Группа"></td><td><input data-eu value="${esc(i.unit||'шт')}" style="width:56px" aria-label="Единица"></td><td colspan="4" class="small">Название и группа изменятся везде, в том числе в журнале.</td><td><input data-ec value="${esc(i.note||'')}" placeholder="Комментарий" aria-label="Комментарий" style="min-width:160px"></td><td class="nowrap"><button class="b primary small" data-save="${i.id}">Сохранить</button> <button class="b small" data-cancel>Отмена</button></td></tr>`;
       return `<tr class="click" data-item="${i.id}" title="Показать движения"><td>${esc(i.name)}</td><td>${i.group?esc(i.group):'<span class="small">нет</span>'}</td><td>${esc(i.unit||'шт')}</td>
       <td class="n">${fmtQ(s.qty)} ${low?'<span class="chip warn">мало</span>':''}</td>
       <td class="n">${s.pending?'<span class="chip soft">+'+fmtQ(s.pending)+'</span>':''}</td>
-      <td class="n">${fmt(s.avg)}</td><td class="n">${fmt(s.value)}</td><td>${ME.role==='viewer'?'':`<button class="b small" data-edit="${i.id}" title="Изменить название и группу">Изменить</button>`}</td></tr>`}).join('')+
-    `</tbody><tfoot><tr><td colspan="6">Всего по выборке</td><td class="n">${fmt(total)}</td><td></td></tr></tfoot></table></div>
+      <td class="n">${fmt(s.avg)}</td><td class="n">${fmt(s.value)}</td><td class="small">${esc(i.note||'')}</td><td>${ME.role==='admin'?`<button class="b small" data-edit="${i.id}" title="Изменить название, группу и комментарий">Изменить</button>`:''}</td></tr>`}).join('')+
+    `</tbody><tfoot><tr><td colspan="6">Всего по выборке</td><td class="n">${fmt(total)}</td><td></td><td></td></tr></tfoot></table></div>
     <p class="small">Себестоимость единицы считается по скользящей средней: каждый приход усредняется с тем, что лежит на складе, списание идёт по текущей средней. Доставка и нанесение входят в себестоимость. Нажмите на строку, чтобы увидеть движения по товару.</p>`;
 }
 
@@ -1094,15 +1094,61 @@ function renderJournal(){
       <label class="f">Тип<select id="jType"><option value="">Все</option><option value="in"${f.type==='in'?' selected':''}>Приход</option><option value="out"${f.type==='out'?' selected':''}>Списание</option></select></label>
       <button class="b" id="jCsv">Скачать CSV</button></div>
     ${list.length?`<div class="tbl"><table><thead><tr><th>Дата</th><th>Тип</th><th>Товар</th><th class="n">Кол-во</th><th class="n">Цена ед.</th><th class="n">Сумма</th><th>Проект / документ</th><th>Комментарий</th><th></th></tr></thead><tbody>
-    ${list.map(v=>`<tr><td class="nowrap">${fdate(v.date)}</td><td>${v.kind==='inventory'?'<span class="chip soft">инвентаризация</span>':v.type==='in'?'<span class="chip ok">приход</span>':'<span class="chip warn">списание</span>'}</td><td>${esc(nameOf(v))}</td><td class="n">${v.type==='in'?'+':'−'}${fmtQ(v.qty)}</td><td class="n">${fmt(v.unitCost)}</td><td class="n">${fmt(v.qty*v.unitCost)}</td><td>${esc(v.type==='in'?v.docRef:v.projectName)}</td><td>${esc(v.note||'')}</td><td>${ME.role==='viewer'?'':`<button class="b small danger" data-mv="${v.id}" title="Отменить запись">Отменить</button>`}</td></tr>`).join('')}
+    ${list.map(journalRow).join('')}
     </tbody></table></div>`:'<div class="empty">Движений нет.</div>'}
-    <p class="small">«Отменить» полностью удаляет запись о движении, остаток пересчитается. Для исправления ошибки в списании отмените его и внесите заново.</p></section>`;
+    <p class="small">«Исправить» у списания меняет дату, товар, количество, проект и комментарий; цена единицы остаётся прежней, если товар тот же. «Отменить» полностью удаляет запись о движении, остаток пересчитается.</p></section>`;
 }
+const editableOut=v=>v.type==='out'&&v.kind!=='inventory';
+function journalRow(v){
+  if(mvEdit&&mvEdit.id===v.id)return moveEditRow(v);
+  return `<tr><td class="nowrap">${fdate(v.date)}</td><td>${v.kind==='inventory'?'<span class="chip soft">инвентаризация</span>':v.type==='in'?'<span class="chip ok">приход</span>':'<span class="chip warn">списание</span>'}</td><td>${esc(nameOf(v))}</td><td class="n">${v.type==='in'?'+':'−'}${fmtQ(v.qty)}</td><td class="n">${fmt(v.unitCost)}</td><td class="n">${fmt(v.qty*v.unitCost)}</td><td>${esc(v.type==='in'?v.docRef:v.projectName)}</td><td>${esc(v.note||'')}</td>
+    <td class="nowrap">${ME.role==='viewer'?'':(editableOut(v)?`<button class="b small" data-mvedit="${v.id}">Исправить</button> `:'')+`<button class="b small danger" data-mv="${v.id}" title="Отменить запись">Отменить</button>`}</td></tr>`;
+}
+/* ---------- исправление списания ---------- */
+let mvEdit=null;
+function moveEditRow(v){
+  const e=mvEdit,m=stockOf(),same=e.itemId===v.itemId,s=m.get(e.itemId);
+  const avail=it=>{const st=m.get(it.id);return(st?st.qty:0)+(it.id===v.itemId?v.qty:0)};
+  const items=state.items.filter(it=>avail(it)>0||it.id===v.itemId).sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  const projects=state.projects.filter(p=>!p.archived||p.id===e.projectId).sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  const price=same?v.unitCost:(s?s.avg:0);
+  return `<tr data-mvrow="${v.id}"><td><input type="date" data-me="date" value="${esc(e.date)}"></td><td><span class="chip warn">списание</span></td>
+    <td><select data-me="itemId">${items.map(it=>`<option value="${it.id}"${it.id===e.itemId?' selected':''}>${esc(it.name)} (доступно ${fmtQ(avail(it))})</option>`).join('')}</select></td>
+    <td class="n"><input class="num" data-me="qty" inputmode="decimal" value="${esc(e.qty)}"></td><td class="n">${fmt(price)}</td><td class="n">${fmt(num(e.qty)*price)}</td>
+    <td><select data-me="projectId">${projects.map(p=>`<option value="${p.id}"${p.id===e.projectId?' selected':''}>${esc(p.name)}${p.archived?' (архив)':''}</option>`).join('')}</select></td>
+    <td><input data-me="note" value="${esc(e.note)}" placeholder="Комментарий"></td>
+    <td class="nowrap"><button class="b primary small" data-mvsave>Сохранить</button> <button class="b small" data-mvcancel>Отмена</button>${e.err?`<div class="chip bad" style="white-space:normal;margin-top:4px">${e.err}</div>`:''}</td></tr>`;
+}
+async function saveMove(){
+  const v=state.moves.find(x=>x.id===mvEdit.id);if(!v){mvEdit=null;renderJournal();return}
+  const e=mvEdit,q=num(e.qty),p=state.projects.find(x=>x.id===e.projectId),s=stockOf().get(e.itemId);
+  const fail=t=>{e.err=t;renderJournal()};
+  if(!e.date)return fail('Укажите дату.');
+  if(!s)return fail('Выберите товар.');
+  if(q<=0)return fail('Количество должно быть больше нуля.');
+  if(!p)return fail('Выберите проект.');
+  const same=e.itemId===v.itemId,avail=s.qty+(same?v.qty:0);
+  if(q>avail+1e-9)return fail(`На складе только ${fmtQ(avail)}.`);
+  busy=true;
+  try{
+    await db.collection('moves').doc(v.id).update({date:e.date,itemId:s.item.id,itemName:s.item.name,qty:q,unitCost:same?v.unitCost:r2(s.avg*1000)/1000,
+      projectId:p.id,projectName:p.name,note:String(e.note||'').trim(),editedAt:Date.now()});
+    mvEdit=null;renderJournal();
+  }catch(x){fail('Не удалось сохранить ('+esc(x&&x.code||'ошибка')+').')}
+  finally{busy=false}
+}
+$('#tab-journal').addEventListener('input',e=>{const t=e.target;if(mvEdit&&t.dataset.me&&t.tagName==='INPUT')mvEdit[t.dataset.me]=t.value});
 $('#tab-journal').addEventListener('change',e=>{
-  const t=e.target;if(t.id==='jItem')journalFilter.item=t.value;if(t.id==='jProj')journalFilter.project=t.value;if(t.id==='jType')journalFilter.type=t.value;renderJournal();
+  const t=e.target;
+  /* поля ввода не перерисовывают таблицу при потере фокуса, иначе теряется нажатие «Сохранить» */
+  if(t.dataset.me){if(t.tagName==='SELECT'&&mvEdit){mvEdit[t.dataset.me]=t.value;mvEdit.err='';renderJournal()}return}
+  if(t.id==='jItem')journalFilter.item=t.value;if(t.id==='jProj')journalFilter.project=t.value;if(t.id==='jType')journalFilter.type=t.value;renderJournal();
 });
 $('#tab-journal').addEventListener('click',async e=>{
   const t=e.target;
+  if(t.dataset.mvedit){const v=state.moves.find(x=>x.id===t.dataset.mvedit);if(v){mvEdit={id:v.id,date:v.date||today(),itemId:v.itemId,qty:String(v.qty),projectId:v.projectId||'',note:v.note||'',err:''};renderJournal()}return}
+  if(t.dataset.mvcancel!==undefined){mvEdit=null;renderJournal();return}
+  if(t.dataset.mvsave!==undefined){if(!busy)saveMove();return}
   if(t.dataset.mv)confirmBtn(t,async()=>{try{await db.collection('moves').doc(t.dataset.mv).delete()}catch(x){}});
   if(t.id==='jCsv'){
     const dl=await claude.use('downloads');if(!dl){t.textContent='Скачивание недоступно';return}
@@ -1115,7 +1161,7 @@ $('#tab-journal').addEventListener('click',async e=>{
 
 /* ---------- справочники ---------- */
 function renderRefs(){
-  const root=$('#tab-refs'),m=stockOf();
+  const root=$('#tab-refs'),m=stockOf(),isAdmin=ME.role==='admin';
   root.innerHTML=`<div class="grid2">
   <section class="panel"><h2>Проекты</h2>
     <div class="row"><label class="f grow">Новый проект<input id="pName" placeholder="Например: Турнир Нордена"></label><button class="b primary" id="pAdd">Добавить</button></div>
@@ -1125,12 +1171,14 @@ function renderRefs(){
   <section class="panel"><h2>Товары</h2>
     ${state.items.length?`<div class="tbl"><table><thead><tr><th>Учётное название</th><th>Группа</th><th>Ед.</th><th class="n">Мин. остаток</th><th></th></tr></thead><tbody>
     ${state.items.slice().sort((a,b)=>a.name.localeCompare(b.name,'ru')).map(i=>{const s=m.get(i.id),used=s&&(s.qIn>0||s.qOut>0);
-      return `<tr><td><input data-in="${i.id}" value="${esc(i.name)}">${(i.aliases||[]).length?`<div class="small">В документах: ${esc((i.aliases||[]).join('; '))}</div>`:''}</td>
+      const al=(i.aliases||[]).length?`<div class="small">В документах: ${esc((i.aliases||[]).join('; '))}</div>`:'';
+      if(!isAdmin)return `<tr><td>${esc(i.name)}${al}</td><td>${esc(i.group||'')}</td><td>${esc(i.unit||'шт')}</td><td class="n">${i.minQty||''}</td><td></td></tr>`;
+      return `<tr><td><input data-in="${i.id}" value="${esc(i.name)}">${al}</td>
       <td><input data-ig="${i.id}" list="groups" value="${esc(i.group||'')}" placeholder="Группа"></td>
       <td><input data-iu="${i.id}" value="${esc(i.unit||'шт')}" style="width:56px"></td>
       <td class="n"><input class="num" data-im="${i.id}" inputmode="decimal" value="${i.minQty||''}" placeholder="0"></td>
       <td>${used?'':`<button class="b small danger" data-idel="${i.id}">Удалить</button>`}</td></tr>`}).join('')}
-    </tbody></table></div><p class="small">Переименование меняет название везде, в том числе в журнале. Когда остаток падает до «мин. остатка», в таблице остатков появляется отметка «мало».</p>`:'<div class="small">Товары появятся после первого прихода.</div>'}</section></div>`;
+    </tbody></table></div><p class="small">${isAdmin?'Переименование меняет название везде, в том числе в журнале. ':'Менять товары может только администратор. '}Когда остаток падает до «мин. остатка», в таблице остатков появляется отметка «мало».</p>`:'<div class="small">Товары появятся после первого прихода.</div>'}</section></div>`;
 }
 $('#tab-refs').addEventListener('click',async e=>{
   const t=e.target;

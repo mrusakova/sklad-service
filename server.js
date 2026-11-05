@@ -177,14 +177,20 @@ function putDoc(col, id, data) {
     .run(col, id, JSON.stringify(data), Date.now());
 }
 const isObj = (o) => o && typeof o === 'object' && !Array.isArray(o);
+/* товары меняет только администратор; сотрудник при приходе может создать новый товар,
+   дописать группу и названия из документов поставщика */
+const ITEM_STAFF_FIELDS = new Set(['group', 'aliases']);
+const itemDenied = (req) => req.params.col === 'items' && req.user.role !== 'admin';
 app.put('/api/c/:col/:id', canWrite, colOk, jsonSmall, (req, res) => {
   if (!idOk(req.params.id) || !isObj(req.body)) return res.status(400).json({ error: 'bad request' });
+  if (itemDenied(req) && db.prepare('SELECT 1 FROM docs WHERE col=? AND id=?').get('items', req.params.id)) return res.status(403).json({ error: 'Менять товары может только администратор' });
   putDoc(req.params.col, req.params.id, req.body);
   broadcast(req.params.col);
   res.json({ ok: true });
 });
 app.patch('/api/c/:col/:id', canWrite, colOk, jsonSmall, (req, res) => {
   if (!idOk(req.params.id) || !isObj(req.body)) return res.status(400).json({ error: 'bad request' });
+  if (itemDenied(req) && Object.keys(req.body).some((k) => !ITEM_STAFF_FIELDS.has(k))) return res.status(403).json({ error: 'Менять товары может только администратор' });
   const row = db.prepare('SELECT data FROM docs WHERE col=? AND id=?').get(req.params.col, req.params.id);
   if (!row) return res.status(404).json({ error: 'not found' });
   putDoc(req.params.col, req.params.id, Object.assign(JSON.parse(row.data), req.body));
@@ -192,6 +198,7 @@ app.patch('/api/c/:col/:id', canWrite, colOk, jsonSmall, (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/api/c/:col/:id', canWrite, colOk, (req, res) => {
+  if (itemDenied(req)) return res.status(403).json({ error: 'Удалять товары может только администратор' });
   db.prepare('DELETE FROM docs WHERE col=? AND id=?').run(req.params.col, req.params.id);
   broadcast(req.params.col);
   res.json({ ok: true });
