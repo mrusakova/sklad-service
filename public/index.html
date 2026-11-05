@@ -56,6 +56,7 @@ button.b:disabled{opacity:.5;cursor:default}
 table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--soft);white-space:nowrap}
+th.sort{cursor:pointer;user-select:none}th.sort:hover,th.sort[aria-sort]{color:var(--accent)}
 tr:last-child td{border-bottom:0}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 tfoot td{font-weight:700;background:var(--soft)}
@@ -342,6 +343,18 @@ function confirmBtn(btn,fn){
 
 /* ---------- остатки ---------- */
 let stockQ='',stockOnly=true,stockGroup='',editing='',editErr='';
+/* сортировка по клику на заголовок: первый клик по возрастанию, второй по убыванию, третий возвращает обычный порядок (группа, название) */
+const STOCK_COLS=[['name','Товар'],['group','Группа'],['unit','Ед.'],['qty','Остаток',1],['pending','Ожидается',1],['avg','Себестоимость ед., ₽',1],['value','Стоимость остатка, ₽',1],['note','Комментарий']];
+let stockSort=(()=>{const[k,d]=String(LS.get('sklad.stockSort')||'').split(':');return STOCK_COLS.some(c=>c[0]===k)?{k,dir:d==='desc'?-1:1}:{k:'',dir:1}})();
+function stockCmp(a,b){
+  const byName=a.item.name.localeCompare(b.item.name,'ru');
+  if(!stockSort.k)return(a.item.group?0:1)-(b.item.group?0:1)||(a.item.group||'').localeCompare(b.item.group||'','ru')||byName;
+  const k=stockSort.k,isNum=STOCK_COLS.find(c=>c[0]===k)[2];
+  if(isNum)return(((a[k]||0)-(b[k]||0))*stockSort.dir)||byName;
+  const x=k==='name'?a.item.name:(a.item[k]||''),y=k==='name'?b.item.name:(b.item[k]||'');
+  if(!x!==!y)return x?-1:1; /* пустые всегда в конце */
+  return(x.localeCompare(y,'ru')*stockSort.dir)||byName;
+}
 function renderStock(){
   const root=$('#tab-stock');
   if(!root.dataset.built){
@@ -355,6 +368,10 @@ function renderStock(){
     $('#sonly').addEventListener('change',e=>{stockOnly=e.target.checked;renderStock()});
     $('#stockTbl').addEventListener('click',async e=>{
       const t=e.target;
+      const th=t.closest('th[data-sort]');
+      if(th){const k=th.dataset.sort;
+        stockSort=stockSort.k!==k?{k,dir:1}:stockSort.dir>0?{k,dir:-1}:{k:'',dir:1};
+        LS.set('sklad.stockSort',stockSort.k?stockSort.k+':'+(stockSort.dir>0?'asc':'desc'):'');renderStock();return}
       if(t.dataset.edit){editing=t.dataset.edit;editErr='';renderStock();return}
       if(t.dataset.cancel!==undefined){editing='';editErr='';renderStock();return}
       if(t.dataset.save){
@@ -375,7 +392,7 @@ function renderStock(){
   sel.innerHTML='<option value="">Все группы</option>'+gs.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')+(state.items.some(i=>!i.group)&&gs.length?'<option value="__none">Без группы</option>':'');
   if(stockGroup&&![...sel.options].some(o=>o.value===stockGroup))stockGroup='';
   sel.value=stockGroup;
-  let rows=[...m.values()].sort((a,b)=>(a.item.group?0:1)-(b.item.group?0:1)||(a.item.group||'').localeCompare(b.item.group||'','ru')||a.item.name.localeCompare(b.item.name,'ru'));
+  let rows=[...m.values()].sort(stockCmp);
   rows=rows.filter(s=>(!stockQ||norm(s.item.name).includes(stockQ)||norm(s.item.group).includes(stockQ)||norm(s.item.note).includes(stockQ))
     &&(!stockGroup||(stockGroup==='__none'?!s.item.group:s.item.group===stockGroup))
     &&(!stockOnly||s.qty>0||s.pending>0||s.item.id===editing));
@@ -386,7 +403,8 @@ function renderStock(){
   if(!state.items.length){box.innerHTML=`<div class="tbl"><div class="empty">Склад пока пуст. Загрузите первый счёт или УПД на вкладке «Приход».<br><br><button class="b primary" data-go="income">Перейти к приходу</button></div></div>`;
     box.querySelector('[data-go]').onclick=()=>goTab('income');return}
   if(!rows.length){box.innerHTML='<div class="tbl"><div class="empty">Ничего не найдено.</div></div>';return}
-  box.innerHTML=(editErr?`<div class="msg bad">${esc(editErr)}</div>`:'')+`<div class="tbl"><table><thead><tr><th>Товар</th><th>Группа</th><th>Ед.</th><th class="n">Остаток</th><th class="n">Ожидается</th><th class="n">Себестоимость ед., ₽</th><th class="n">Стоимость остатка, ₽</th><th>Комментарий</th><th></th></tr></thead><tbody>`+
+  box.innerHTML=(editErr?`<div class="msg bad">${esc(editErr)}</div>`:'')+`<div class="tbl"><table><thead><tr>${STOCK_COLS.map(([k,t,n])=>{const on=stockSort.k===k;
+      return `<th class="sort${n?' n':''}" data-sort="${k}" title="Сортировать"${on?` aria-sort="${stockSort.dir>0?'ascending':'descending'}"`:''}>${t}${on?(stockSort.dir>0?' ▲':' ▼'):''}</th>`}).join('')}<th></th></tr></thead><tbody>`+
     rows.map(s=>{const i=s.item,low=i.minQty>0&&s.qty<=i.minQty;
       if(i.id===editing)return `<tr data-item="${i.id}"><td><input data-en value="${esc(i.name)}" aria-label="Название"></td><td><input data-eg list="groups" value="${esc(i.group||'')}" placeholder="Группа" aria-label="Группа"></td><td><input data-eu value="${esc(i.unit||'шт')}" style="width:56px" aria-label="Единица"></td><td colspan="4" class="small">Название и группа изменятся везде, в том числе в журнале.</td><td><input data-ec value="${esc(i.note||'')}" placeholder="Комментарий" aria-label="Комментарий" style="min-width:160px"></td><td class="nowrap"><button class="b primary small" data-save="${i.id}">Сохранить</button> <button class="b small" data-cancel>Отмена</button></td></tr>`;
       return `<tr class="click" data-item="${i.id}" title="Показать движения"><td>${esc(i.name)}</td><td>${i.group?esc(i.group):'<span class="small">нет</span>'}</td><td>${esc(i.unit||'шт')}</td>
